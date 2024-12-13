@@ -1,0 +1,372 @@
+---
+title: "RNA_Pre_Processing"
+format: html
+editor: visual
+---
+
+# RNA Pre-Processing
+
+\## Overview
+
+In this file we take the raw single-cell UMI count data and turn it into bulk RNA data format.
+
+
+
+In this step, we load the raw single-cell UMI count data from the provided RDS file. We then perform basic inspections---such as checking the data structure, dimensions, and a summary of gene expression counts. This ensures that the data is correctly imported and provides us with an overview of its size and complexity.
+
+```{r}
+library(readr)
+library(Matrix)
+#Set your own Woeking directory
+setwd('/home/cbb575_yso3/Analysis_RNA/')
+
+path <- "GSE131907_Lung_Cancer_raw_UMI_matrix.rds"
+data <- readRDS(path)
+
+# Check the structure of the data
+str(data)
+
+# View dimensions (rows and columns)
+dim(data)
+
+# View the first few rows and columns
+head(data)
+
+# Summary of the data (gives basic stats for each column)
+summary(data)
+
+```
+
+\## Filtering Lung Samples
+
+We only focus on specific lung samples (both normal and tumor) relevant to our study. By filtering the large dataset to include only these target samples, we reduce noise and ensure the subsequent analysis steps are performed on a well-defined subset of interest.
+
+```{r}
+# Function to filter columns for specific lung samples
+filter_lung_samples <- function(df) {
+  # List of sample IDs we want to keep
+  target_samples <- c(
+    "LUNG_N06", "LUNG_N08", "LUNG_N09", "LUNG_N18", "LUNG_N19", 
+    "LUNG_N20", "LUNG_N28", "LUNG_N30", "LUNG_N31", "LUNG_N34",
+    "LUNG_T06", "LUNG_T08", "LUNG_T09", "LUNG_T18", "LUNG_T19", 
+    "LUNG_T20", "LUNG_T25", "LUNG_T28", "LUNG_T30", "LUNG_T31", "LUNG_T34"
+  )
+  
+  # Create pattern to match these samples in column names
+  pattern <- paste(target_samples, collapse="|")
+  
+  # Get columns that contain any of our target samples
+  selected_cols <- grep(pattern, names(df), value = TRUE)
+  
+  # Return filtered dataframe with only the selected columns
+  filtered_df <- df[, selected_cols]
+  
+  return(filtered_df)
+}
+
+# Apply the filter function
+filtered_data <- filter_lung_samples(data)
+
+# Check the dimensions of the filtered data
+dim(filtered_data)
+
+```
+
+\## Aggregating to Pseudo-Bulk
+
+Since the data is single-cell based, we aggregate expression values within each sample to produce pseudo-bulk profiles. We average the gene expression across all cells for each sample. This yields a simplified bulk-like dataset, making downstream analyses (like differential expression) more straightforward and less influenced by single-cell variability.
+
+```{r}
+# Function to aggregate gene expression data by main sample
+aggregate_expression <- function(df) {
+  # Extract the LUNG sample IDs from column names (middle part)
+  get_lung_id <- function(col_name) {
+    parts <- strsplit(col_name, "_")[[1]]
+    if (length(parts) >= 3 && parts[2] == "LUNG") {
+      return(paste("LUNG", parts[3], sep="_"))
+    }
+    return(NA)
+  }
+  
+  # Get LUNG sample ID for each column
+  sample_ids <- sapply(colnames(df), get_lung_id)
+  
+  # Get unique LUNG samples (removing NAs)
+  lung_samples <- unique(sample_ids[!is.na(sample_ids)])
+  
+  # Initialize result dataframe
+  result <- data.frame(row.names = rownames(df))
+  
+  # For each LUNG sample
+  for (sample in lung_samples) {
+    # Get columns matching this sample
+    matching_cols <- which(sample_ids == sample)
+    
+    # Calculate mean expression across all cells for this sample
+    if (length(matching_cols) > 0) {
+      sample_mean <- rowMeans(df[, matching_cols, drop = FALSE])
+      
+      # Add to result dataframe
+      result[[sample]] <- sample_mean
+    }
+  }
+  
+  return(result)
+}
+
+# Function to get cell counts per sample
+get_cell_counts <- function(df) {
+  get_lung_id <- function(col_name) {
+    parts <- strsplit(col_name, "_")[[1]]
+    if (length(parts) >= 3 && parts[2] == "LUNG") {
+      return(paste("LUNG", parts[3], sep="_"))
+    }
+    return(NA)
+  }
+  
+  sample_ids <- sapply(colnames(df), get_lung_id)
+  lung_samples <- unique(sample_ids[!is.na(sample_ids)])
+  
+  counts <- sapply(lung_samples, function(sample) {
+    sum(sample_ids == sample, na.rm = TRUE)
+  })
+  
+  return(counts)
+}
+
+
+```
+
+\## Check
+
+We check to ensure we aggregated data correctly
+
+```{r}
+# Get the aggregated expression data
+aggregated_data <- aggregate_expression(filtered_data)
+
+# Check dimensions
+dim(aggregated_data)
+
+# See how many cells were used for each sample
+cell_counts <- get_cell_counts(filtered_data)
+print(cell_counts)
+
+# View the first few rows of the aggregated data
+head(aggregated_data)
+```
+
+\## Normalization (Log2 Transformation)
+
+To stabilize variance and handle the wide range of expression levels, we apply a log2 transformation (with a small pseudocount). This normalization step helps to reduce the impact of highly variable, abundantly expressed genes and makes the data more suitable for comparisons and statistical modeling. If you prefer you can use other Normalization procedures.
+
+```{r}
+
+# Function to process the aggregated expression data
+process_expression_data <- function(aggregated_data, transform = "log2") {
+  # Transpose the dataframe
+  transposed_data <- t(aggregated_data)
+  transposed_data <- as.data.frame(transposed_data)
+  
+  # Apply transformation
+  if (transform == "log2") {
+    # Add a small constant to avoid log(0)
+    # Common practice is to add 1 or a small value like 0.1
+    transposed_data <- log2(transposed_data + 1)
+  } else if (transform == "log10") {
+    transposed_data <- log10(transposed_data + 1)
+  } else if (transform == "vst") {
+    # library(DESeq2) 
+    # transposed_data <- varianceStabilizingTransformation(as.matrix(transposed_data))
+    warning("VST transformation requires DESeq2 package")
+  }
+  
+  return(transposed_data)
+}
+
+# Function to get basic stats of the transformed data
+get_expression_stats <- function(transformed_data) {
+  stats <- list(
+    mean_expression = rowMeans(transformed_data),
+    median_expression = apply(transformed_data, 1, median),
+    var_expression = apply(transformed_data, 1, var),
+    total_features = ncol(transformed_data),
+    total_samples = nrow(transformed_data)
+  )
+  return(stats)
+}
+
+# transformed_data <- process_expression_data(aggregated_data, transform = "log2")
+# stats <- get_expression_stats(transformed_data)
+```
+
+If you prefer you can use other Normalization procedures.
+
+```{r}
+
+# Transform the data
+transformed_data <- process_expression_data(aggregated_data, transform = "log2")
+
+# Check dimensions
+dim(transformed_data)
+
+# Look at first few rows and columns
+head(transformed_data[, 1:5])
+
+# Get basic stats
+stats <- get_expression_stats(transformed_data)
+print(stats)
+
+# Optional Filter low-expression genes
+# Remove genes with low mean expression (adjust threshold as needed)
+#high_expression_genes <- transformed_data[, stats$mean_expression > 1]
+
+```
+
+\## Checking Statistical Summary
+
+The \`get_expression_stats()\` function calculates basic metrics (mean, median, variance, etc.) for each sample. By reviewing these summary statistics, we can confirm that the data transformation worked as expected and that there are no obvious issues (e.g., samples with abnormally high variance). This quick check helps ensure the data is ready for downstream analysis.
+
+```{r}
+
+# Function to get basic stats of the transformed data
+get_expression_stats <- function(transformed_data) {
+  # Calculate basic statistics
+  stats <- list(
+    # Calculate mean expression for each sample
+    mean_expression = rowMeans(transformed_data),
+    
+    # Calculate median expression for each sample
+    median_expression = apply(transformed_data, 1, median),
+    
+    # Calculate variance for each sample
+    var_expression = apply(transformed_data, 1, var),
+    
+    # Get number of genes (columns)
+    total_features = ncol(transformed_data),
+    
+    # Get number of samples (rows)
+    total_samples = nrow(transformed_data)
+  )
+  
+  # Add some additional useful statistics
+  stats$std_dev = sqrt(stats$var_expression)  # Standard deviation
+  stats$cv = stats$std_dev / stats$mean_expression  # Coefficient of variation
+  
+  # Create a summary data frame
+  summary_df <- data.frame(
+    Sample = names(stats$mean_expression),
+    Mean = stats$mean_expression,
+    Median = stats$median_expression,
+    Variance = stats$var_expression,
+    StdDev = stats$std_dev,
+    CV = stats$cv
+  )
+  
+  # Add summary to the stats list
+  stats$summary_df = summary_df
+  
+  return(stats)
+}
+
+# Example usage:
+# stats <- get_expression_stats(transformed_data)
+# 
+# # View the summary dataframe
+# print(stats$summary_df)
+# 
+# # Get overall dataset information
+# cat("Total features (genes):", stats$total_features, "\n")
+# cat("Total samples:", stats$total_samples, "\n")
+#
+
+```
+
+\## Metadata Integration
+
+Finally, we integrate clinical and sample-specific metadata (e.g., patient ID, tissue origin, histology) with our processed expression data. This enriched dataset allows for biologically meaningful interpretations and enables analyses that consider both gene expression and clinical factors. After this integration, we export the finalized, normalized, and annotated dataset for downstream analyses.
+
+```{r}
+# Function to create metadata dataframe and merge with expression data
+add_metadata <- function(transformed_data) {
+  # Create metadata dataframe
+  metadata <- data.frame(
+    Patient_id = c("P0001", "P0006", "P0008", "P0009", "P0018", "P0019", "P0020", 
+                   "P0028", "P0030", "P0031", "P0034",
+                   "P0006", "P0008", "P0009", "P0018", "P0019", "P0020", "P0025",
+                   "P0028", "P0030", "P0031", "P0034"),
+    Sample = c("LUNG_N01", "LUNG_N06", "LUNG_N08", "LUNG_N09", "LUNG_N18", "LUNG_N19", 
+               "LUNG_N20", "LUNG_N28", "LUNG_N30", "LUNG_N31", "LUNG_N34",
+               "LUNG_T06", "LUNG_T08", "LUNG_T09", "LUNG_T18", "LUNG_T19", "LUNG_T20",
+               "LUNG_T25", "LUNG_T28", "LUNG_T30", "LUNG_T31", "LUNG_T34"),
+    Tissue_origin = c(rep("nLung", 11), rep("tLung", 11)),
+    Histology = c(rep("ADC", 7), "ADC(Double)", rep("ADC", 3),
+                  rep("ADC", 6), "ADC(Double)", "ADC(Double)", rep("ADC", 3)),
+    Sex = c("Female", rep("Male", 3), "Female", rep("Male", 6),
+            rep("Male", 11)),
+    Age = c(70, 54, 60, 67, 62, 53, 55, 73, 56, 65, 64,
+            54, 60, 67, 62, 53, 55, 69, 73, 56, 65, 64),
+    Smoking = c("Never", "Ex", "Never", "Ex", "Ex", "Cur", "Cur", "Cur", 
+                "Never", "Ex", "Never",
+                "Ex", "Never", "Ex", "Ex", "Cur", "Cur", "Ex", "Cur", 
+                "Never", "Ex", "Never"),
+    Pathology = c("MD", "MD", "MD", "PD", "MD", "WD", "PD", "na", "na", "na", "MD",
+                  "MD", "MD", "PD", "MD", "WD", "PD", "na", "na", "na", "na", "MD"),
+    EGFR = c("WT", "na", "L858R", "WT", "del19", "exon 20", "WT", "WT", "del19", 
+             "WT", "WT",
+             "na", "L858R", "WT", "del19", "exon 20", "WT", "WT", "WT", "del19", 
+             "WT", "WT"),
+    Stage = c("IA", "IA", "IB", "IIA", "IA", "IA", "IA", "IIIA", "IA", "IIIA", "IA3",
+              "IA", "IB", "IIA", "IA", "IA", "IA", "IA", "IIIA", "IA", "IIIA", "IA3")
+  )
+  
+  # Make sure metadata row order matches transformed_data row order
+  metadata <- metadata[match(rownames(transformed_data), metadata$Sample), ]
+  
+  # Combine metadata with expression data
+  result <- cbind(metadata, transformed_data)
+  
+  return(result)
+}
+
+# Function to perform some basic QC checks
+check_metadata_matching <- function(combined_data, original_data) {
+  # Check if all samples are present
+  missing_samples <- setdiff(rownames(original_data), combined_data$Sample)
+  
+  # Check if metadata and expression data dimensions make sense
+  n_metadata_cols <- 10  # number of metadata columns
+  expected_cols <- n_metadata_cols + ncol(original_data)
+  
+  checks <- list(
+    missing_samples = missing_samples,
+    dimensions_match = ncol(combined_data) == expected_cols,
+    row_numbers_match = nrow(combined_data) == nrow(original_data)
+  )
+  
+  return(checks)
+}
+
+# Add metadata to transformed expression data
+combined_data <- add_metadata(transformed_data)
+#
+checks <- check_metadata_matching(combined_data, transformed_data)
+print(checks)
+# # View the first few rows and columns
+head(combined_data[, 1:15]) 
+```
+
+\# Save the data bulk RNA data as a csv file
+
+```{r}
+# Add metadata
+combined_data <- add_metadata(transformed_data)
+
+# Basic QC
+checks <- check_metadata_matching(combined_data, transformed_data)
+if (length(checks$missing_samples) > 0) {
+  warning("Some samples are missing from metadata!")
+}
+
+write.csv(combined_data, "combined_expression_data.csv", row.names = FALSE)
+```

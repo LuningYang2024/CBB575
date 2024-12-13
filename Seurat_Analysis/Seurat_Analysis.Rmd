@@ -1,0 +1,155 @@
+---
+title: "CBB575_sc_tutorial"
+author: "Luning Yang"
+date: "2024-12-13"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Single-cell Analysis Pipeline for GSE131907
+
+This tutorial provides a step-by-step guide to analyze single-cell RNA-seq data using Seurat. Each section includes the purpose, inputs, and expected outputs for clarity. The open-source dataset for GSE131907 is from https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE131907. 
+
+## Step 1: Create Seurat Object with Metadata Annotation
+
+### Purpose:
+- To preprocess the raw UMI matrix and annotate it with metadata, enabling downstream analysis.
+
+### Input:
+- **GSE131907_Lung_Cancer_raw_UMI_matrix.rds**: Raw UMI matrix.
+- **GSE131907_Lung_Cancer_Feature_Summary.csv**: Metadata file.
+- **GSE131907_scrna_anno.csv**: Cell annotation file.
+
+### Output:
+- **GSE131907_filtered_lung_seurat.rds**: Annotated and filtered Seurat object.
+
+```{r}
+library(Seurat)
+library(dplyr)
+library(readxl)
+library(ggplot2)
+library(harmony)
+library(patchwork)
+
+# Load the raw UMI matrix
+umi_matrix <- readRDS("GSE131907_Lung_Cancer_raw_UMI_matrix.rds")
+
+# Extract sample names from the UMI barcodes (first 16 characters)
+sample_names <- sapply(colnames(umi_matrix), function(x) {
+  substr(x, 18, nchar(x)) 
+})
+
+# Create a Seurat object
+cell_index <- colnames(umi_matrix)
+lung_seurat <- CreateSeuratObject(counts = umi_matrix)
+lung_seurat$orig.ident <- cell_index
+
+# Add sample names as metadata
+lung_seurat <- AddMetaData(object = lung_seurat, metadata = sample_names, col.name = "sample_name")
+
+# Load the feature summary metadata
+feature_summary <- read_csv("GSE131907_Lung_Cancer_Feature_Summary.csv")
+feature_summary <- feature_summary[,-1]
+original_colnames <- colnames(lung_seurat)
+lung_seurat@meta.data <- lung_seurat@meta.data %>%
+  left_join(feature_summary, by = c("sample_name" = "Samples"))
+rownames(lung_seurat@meta.data) <- original_colnames
+
+# Add a new metadata column 'label'
+lung_seurat$label <- ifelse(lung_seurat$`Tissue origins` %in% c("nLung", "nLN"), "Control", "Disease")
+
+# Load the cell annotation csv and match the Index with Seurat object
+cell_annotation <- read_csv("/vast/palmer/pi/xiting_yan/ly349/BL_lung_analysis/Cell_Deconvolution/GSE131907_scrna_anno.csv")
+matched_annotation <- cell_annotation[match(colnames(lung_seurat), cell_annotation$Index), ]
+
+# Add the cell type information as metadata to the Seurat object
+lung_seurat <- AddMetaData(object = lung_seurat, metadata = matched_annotation[, c("Cell_type", "Cell_type.refined", "Cell_subtype")])
+
+# Subset the Seurat object based on the Tissue origins metadata
+colnames(lung_seurat@meta.data)[which(colnames(lung_seurat@meta.data) == "Tissue origins")] <- "Tissue_origins"
+DefaultAssay(lung_seurat) <- "RNA"
+filtered_lung_seurat <- subset(lung_seurat, subset = Tissue_origins %in% c("nLung", "tLung", "tL/B"))
+saveRDS(filtered_lung_seurat, file = "GSE131907_filtered_lung_seurat.rds")
+```
+
+## Step 2: Filter Subjects with Paired Samples
+
+### Purpose:
+- To retain only paired samples for 10 subjects.
+
+### Input:
+- **GSE131907_filtered_lung_seurat.rds**: Filtered Seurat object.
+
+### Output:
+- **GSE131907_seurat_preprocessed_meta_paired.rds**: Seurat object with paired samples.
+
+```{r}
+# Load the data
+filtered_lung_seurat <- readRDS("GSE131907_filtered_lung_seurat.rds")
+
+# Define the list of Patient IDs you want to keep
+patient_ids <- c("P0006", "P0008", "P0009", "P0018", "P0019", "P0020", "P0028", "P0030", "P0031", "P0034")
+colnames(filtered_lung_seurat@meta.data)[which(colnames(filtered_lung_seurat@meta.data) == "Patient id")] <- "Patient_id"
+
+# Subset the Seurat object
+subset_seurat <- subset(filtered_lung_seurat, subset = `Patient_id` %in% patient_ids)
+
+subset_seurat@meta.data$Tissue_origins <- factor(subset_seurat@meta.data$Tissue_origins, 
+                                                        levels = c("nLung", "tLung"))
+
+subset_seurat$sample <- factor(subset_seurat$sample_name, levels = unique(subset_seurat$sample_name[order(subset_seurat$`Patient_id`)]))
+
+# Normalize the data and find variable features
+subset_seurat <- NormalizeData(subset_seurat)
+subset_seurat <- FindVariableFeatures(subset_seurat, selection.method = "vst", nfeatures = 2000)
+
+# Perform PCA
+subset_seurat <- ScaleData(subset_seurat)
+subset_seurat <- RunPCA(subset_seurat, npcs = 30)
+
+# Run Harmony integration
+subset_seurat <- RunHarmony(subset_seurat, group.by.vars = "sample", reduction = "pca", assay.use = "RNA")
+
+# Run UMAP and clustering
+subset_seurat <- FindNeighbors(subset_seurat, reduction = "harmony", dims = 1:20)
+subset_seurat <- FindClusters(subset_seurat, resolution = 0.5)
+subset_seurat <- RunUMAP(subset_seurat, reduction = "harmony", dims = 1:20)
+
+# Save the preprocessed object
+saveRDS(subset_seurat, file = "GSE131907_seurat_preprocessed_meta_paired.rds")
+```
+
+## Step 3: Perform Exploratory Data Analysis Using UMAP
+
+### Purpose:
+- To visualize clustering results and explore metadata relationships.
+
+### Input:
+- **GSE131907_seurat_preprocessed_meta_paired.rds**: Preprocessed Seurat object.
+
+### Output:
+- UMAP plots grouped by various metadata categories.
+
+```{r}
+# Load the data
+subset_seurat <- readRDS("GSE131907_seurat_preprocessed_meta_paired.rds")
+
+# Generate UMAP plots
+DimPlot(subset_seurat, reduction = "umap", group.by = "sample", pt.size = 0.5) + ggtitle("UMAP by Sample")
+DimPlot(subset_seurat, reduction = "umap", group.by = "Patient_id", pt.size = 0.5) + ggtitle("UMAP by Patient ID")
+DimPlot(subset_seurat, reduction = "umap", group.by = "Tissue_origins", pt.size = 0.5) + ggtitle("UMAP by Tissue origins")
+DimPlot(subset_seurat, reduction = "umap", group.by = "label", pt.size = 0.5) + ggtitle("UMAP by Disease Label")
+DimPlot(subset_seurat, reduction = "umap", group.by = "Cell_type", pt.size = 0.5) + ggtitle("UMAP by Cell Type")
+DimPlot(subset_seurat, reduction = "umap", group.by = "Cell_subtype", pt.size = 0.5) + ggtitle("UMAP by Cell Subtype")
+DimPlot(subset_seurat, reduction = "umap", group.by = "Smoking", pt.size = 0.5) + ggtitle("UMAP by Smoking")
+DimPlot(subset_seurat, reduction = "umap", group.by = "Stages", pt.size = 0.5) + ggtitle("UMAP by Stages")
+```
+
+---
+
+This tutorial illustrates the single-cell RNA-seq data preprocessing, integration, and exploratory analysis workflow using Seurat. Future steps could include differential expression analysis and pathway enrichment studies.

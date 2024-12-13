@@ -17,7 +17,7 @@ In this step, we load the raw single-cell UMI count data from the provided RDS f
 ```{r}
 library(readr)
 library(Matrix)
-#Set your own Woeking directory
+#Set your own Working directory
 setwd('/home/cbb575_yso3/Analysis_RNA/')
 
 path <- "GSE131907_Lung_Cancer_raw_UMI_matrix.rds"

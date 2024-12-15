@@ -27,7 +27,6 @@ The repository contains three main analysis components:
    - Conduct pathway enrichment analysis with Cytoscape (DAVID/gProfiler).  
 - **Expected Results**:  
    - Heatmaps showing gene expression variation (tumor vs. control).  
-   - Enrichment maps highlighting key biological pathways.  
 
 ### 3. **Tumor and Patient Signatures/**  
 - **Objective**: Identify tumor- and patient-specific gene signatures to explore heterogeneity.  

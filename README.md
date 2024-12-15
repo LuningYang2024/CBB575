@@ -26,7 +26,8 @@ The repository contains three main analysis components:
    - Use hierarchical clustering to group genes by expression profiles.  
    - Conduct pathway enrichment analysis with Cytoscape (DAVID/gProfiler).  
 - **Expected Results**:  
-   - Heatmaps showing gene expression variation (tumor vs. control).  
+   - Heatmaps showing gene expression variation (tumor vs. control).
+   - - Heatmaps showing gene expression variation (smoking vs. non-smoking). 
 
 ### 3. **Tumor and Patient Signatures/**  
 - **Objective**: Identify tumor- and patient-specific gene signatures to explore heterogeneity.  

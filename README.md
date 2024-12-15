@@ -53,8 +53,8 @@ Install the following tools and libraries before running the analyses:
 ## **How to Run**  
 1. Clone the repository:  
    ```bash
-   git clone https://github.com/your_username/luad_bioinformatics.git
-   cd luad_bioinformatics
+   git clone https://github.com/LuningYang2024/CBB575.git
+   cd luad_bioinf_analysis
    ```  
 
 2. Follow the step-by-step analysis in each folder:  
